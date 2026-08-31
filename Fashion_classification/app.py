@@ -5,51 +5,47 @@ from PIL import Image, ImageFilter
 from scipy import ndimage
 from tensorflow import keras
 
-st.set_page_config(page_title="Digit Recognizer")
-st.title("Handwritten Digit Recognizer")
+st.set_page_config(page_title="Fashion Item Classifier")
+st.title("Fashion Item Classifier")
 
-# ---------------------------------------------------------------------------
-# Set model path to the local trained model in this directory
+# Fashion MNIST class labels
+class_names = [
+    "T-shirt/top",
+    "Trouser",
+    "Pullover",
+    "Dress",
+    "Coat",
+    "Sandal",
+    "Shirt",
+    "Sneaker",
+    "Bag",
+    "Ankle boot",
+]
+
+# Set model path to the model in the Fashion_classification folder
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "my_first_trained_model_3.keras")
-# ---------------------------------------------------------------------------
+MODEL_PATH = os.path.join(BASE_DIR, "Fashion_classification_1.keras")
 
 if not os.path.exists(MODEL_PATH):
-    st.error(f"No model file at `{MODEL_PATH}`")
-    st.info(
-        "Open `app_test.py`, find the `MODEL_PATH` line near the top, and set it to "
-        "the full path of the `.keras` file you downloaded from Colab.\n\n"
-        "On Linux or Mac it usually looks like `/home/you/Downloads/my_first_trained_model.keras`, "
-        "on Windows like `C:/Users/you/Downloads/my_first_trained_model.keras`."
-    )
+    st.error(f"No model file found at `{MODEL_PATH}`")
+    st.info("Please ensure `Fashion_classification_1.keras` is in the `Fashion_classification` directory.")
     st.stop()
 
 model = keras.models.load_model(MODEL_PATH)
 
 
 def prepare_image(pil_image):
-    """Turn a photo of a handwritten digit into the 28x28 input the model expects.
-
-    A phone photo looks nothing like MNIST, so there is real work to do here.
-    """
+    """Turn a photo of a clothing item into the 28x28 input the model expects."""
     gray = pil_image.convert("L")
     a = np.asarray(gray, dtype=np.float32)
     big = max(gray.size)
 
     def ink(radius):
-        """Whatever is DARKER than its own local background is ink.
-
-        Blurring the photo estimates what the blank page looks like: the blur
-        erases the pen strokes but keeps shadows and uneven lighting. Comparing
-        against that also handles the inversion, since a photo is dark ink on
-        white paper while MNIST is a white digit on black.
-        """
-        bg = np.asarray(gray.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32)
+        bg = np.asarray(
+            gray.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32
+        )
         return np.clip(bg - a, 0, None)
 
-    # The blur radius has to be bigger than the pen stroke, or the "background"
-    # eats into the stroke and hollows it out. But too big and it stops tracking
-    # a sharp shadow edge. So measure the stroke first, then size the radius to it.
     rough = ink(big / 12.0)
     if rough.max() == 0:
         return np.zeros((28, 28), np.float32)
@@ -64,8 +60,6 @@ def prepare_image(pil_image):
     if a.max() == 0:
         return np.zeros((28, 28), np.float32)
 
-    # Keep only the biggest connected blob of ink. That is the digit - ruled
-    # paper lines, smudges and dust specks get dropped here.
     mask = a > 0.35 * a.max()
     labels, n = ndimage.label(mask)
     if n > 1:
@@ -74,9 +68,6 @@ def prepare_image(pil_image):
     if not mask.any():
         return np.zeros((28, 28), np.float32)
 
-    # Crop tight to the digit, then rebuild the MNIST framing ourselves: scale the
-    # longest side to 20px and paste it centred into a 28x28 box. Taking the margin
-    # from the photo instead would fail whenever someone zooms right in.
     ys, xs = np.where(mask)
     a = a[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
     a = a / a.max() * 255.0
@@ -93,7 +84,6 @@ def prepare_image(pil_image):
     top, left = (28 - nh) // 2, (28 - nw) // 2
     out[top : top + nh, left : left + nw] = small
 
-    # MNIST digits sit at their centre of mass, not the centre of their box.
     total = out.sum()
     if total > 0:
         idx = np.arange(28)
@@ -108,17 +98,14 @@ def prepare_image(pil_image):
     return out / max(out.max(), 1e-6)
 
 
-# Upload image
-# The uploader's key includes a counter. Bumping the counter gives Streamlit a
-# brand new widget, which is how we clear the current file and ask for another.
 if "upload_round" not in st.session_state:
     st.session_state.upload_round = 0
 
-st.caption("Take a photo of a handwritten digit (0-9) and upload it.")
+st.caption("Upload a photo of a fashion item (e.g. T-shirt, shoe, bag).")
 image_file = st.file_uploader(
-    "Upload digit image",
+    "Upload fashion image",
     type=["png", "jpg", "jpeg"],
-    key=f"digit_image_{st.session_state.upload_round}",
+    key=f"fashion_image_{st.session_state.upload_round}",
 )
 
 if image_file is not None:
@@ -131,17 +118,18 @@ if image_file is not None:
 
     with right:
         y_prob = model.predict(img_array.reshape(1, 28, 28), verbose=0)[0]
-        y_pred = y_prob.argmax()
-        st.markdown(f"# Predicted: {y_pred}")
-        st.progress(float(y_prob[y_pred]), text=f"{y_prob[y_pred]:.1%} confident")
+        y_pred_idx = y_prob.argmax()
+        predicted_item = class_names[y_pred_idx]
 
-    st.bar_chart({"probability": y_prob})
+        st.markdown(f"# Predicted: {predicted_item}")
+        st.progress(
+            float(y_prob[y_pred_idx]), text=f"{y_prob[y_pred_idx]:.1%} confident"
+        )
+
+    st.bar_chart({name: prob for name, prob in zip(class_names, y_prob)})
 
     with st.expander("What the model sees (28x28)"):
-        st.caption(
-            "This should be a white digit on a black background. "
-            "If it is not, the prediction will be wrong."
-        )
+        st.caption("This should be a white clothing item on a black background.")
         st.image(img_array, width=140, clamp=True)
 
     if st.button("Upload another image", type="primary"):
