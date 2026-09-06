@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 from scipy import ndimage
 from tensorflow import keras
 
@@ -22,16 +22,46 @@ class_names = [
     "Ankle boot",
 ]
 
-# Set model path to the model in the Fashion_classification folder
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "Fashion_classification_1.keras")
 
-if not os.path.exists(MODEL_PATH):
-    st.error(f"No model file found at `{MODEL_PATH}`")
-    st.info("Please ensure `Fashion_classification_1.keras` is in the `Fashion_classification` directory.")
+# Sidebar model selection (Default to MLP for maximum stability)
+st.sidebar.header("Model Selection")
+model_options = {}
+mlp_path = os.path.join(BASE_DIR, "Fashion_classification_1.keras")
+cnn_path = os.path.join(BASE_DIR, "Fashion_classification_cnn.keras")
+
+if os.path.exists(mlp_path):
+    model_options["MLP (Dense Model - Stable)"] = mlp_path
+if os.path.exists(cnn_path):
+    model_options["CNN (Convolutional Model)"] = cnn_path
+
+if not model_options:
+    st.error("No trained model files found (`Fashion_classification_1.keras` or `Fashion_classification_cnn.keras`).")
     st.stop()
 
-model = keras.models.load_model(MODEL_PATH)
+# Default to MLP if available for robust error-free experience
+default_index = 0
+for idx, name in enumerate(model_options.keys()):
+    if "MLP" in name:
+        default_index = idx
+        break
+
+selected_model_name = st.sidebar.selectbox("Choose Model Architecture", list(model_options.keys()), index=default_index)
+MODEL_PATH = model_options[selected_model_name]
+
+@st.cache_resource
+def load_model(path):
+    try:
+        return keras.models.load_model(path)
+    except Exception as e:
+        st.error(f"Error loading model from {path}: {e}")
+        return None
+
+model = load_model(MODEL_PATH)
+if model is None:
+    st.stop()
+
+st.sidebar.success(f"Loaded: {selected_model_name}")
 
 
 def prepare_image(pil_image):
@@ -109,24 +139,51 @@ image_file = st.file_uploader(
 )
 
 if image_file is not None:
-    img_array = prepare_image(Image.open(image_file))
+    try:
+        pil_img = Image.open(image_file)
+        pil_img = ImageOps.exif_transpose(pil_img)
+        if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+            rgba_img = pil_img.convert("RGBA")
+            bg = Image.new("RGB", rgba_img.size, (255, 255, 255))
+            bg.paste(rgba_img, (0, 0), rgba_img)
+            pil_img = bg
+        else:
+            pil_img = pil_img.convert("RGB")
+        img_array = prepare_image(pil_img)
+    except Exception as e:
+        st.error(f"Error processing uploaded image: {e}")
+        st.stop()
 
     left, right = st.columns(2)
 
     with left:
-        st.image(Image.open(image_file), caption="Your image", width=250)
+        st.image(pil_img, caption="Your image", width=250)
 
     with right:
-        y_prob = model.predict(img_array.reshape(1, 28, 28), verbose=0)[0]
-        y_pred_idx = y_prob.argmax()
-        predicted_item = class_names[y_pred_idx]
+        try:
+            # Robust dimension handling for CNN (4D) vs MLP (3D)
+            input_shape = model.input_shape
+            if len(input_shape) == 4:
+                # CNN expects (batch, height, width, channels)
+                X_model = img_array.reshape(1, 28, 28, 1).astype(np.float32)
+            else:
+                # MLP expects (batch, height, width) or (batch, features)
+                X_model = img_array.reshape(1, 28, 28).astype(np.float32)
+                
+            y_prob = model.predict(X_model, verbose=0)[0]
+            y_pred_idx = int(y_prob.argmax())
+            predicted_item = class_names[y_pred_idx]
 
-        st.markdown(f"# Predicted: {predicted_item}")
-        st.progress(
-            float(y_prob[y_pred_idx]), text=f"{y_prob[y_pred_idx]:.1%} confident"
-        )
+            st.markdown(f"# Predicted: {predicted_item}")
+            st.progress(
+                float(y_prob[y_pred_idx]), text=f"{y_prob[y_pred_idx]:.1%} confident"
+            )
+        except Exception as e:
+            st.error(f"Prediction error with model `{selected_model_name}`: {e}")
+            st.info("Try switching to the MLP (Dense Model) in the sidebar for stable predictions.")
+            st.stop()
 
-    st.bar_chart({name: prob for name, prob in zip(class_names, y_prob)})
+    st.bar_chart({name: float(prob) for name, prob in zip(class_names, y_prob)})
 
     with st.expander("What the model sees (28x28)"):
         st.caption("This should be a white clothing item on a black background.")
